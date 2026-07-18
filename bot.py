@@ -18,10 +18,7 @@ except (TypeError, ValueError):
 
 logging.basicConfig(level=logging.INFO)
 
-from aiogram.client.session.aiohttp import AiohttpSession
-
-session = AiohttpSession(proxy="http://proxy.server:3128")
-bot = Bot(token=API_TOKEN, session=session)
+bot = Bot(token=API_TOKEN)
 
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()

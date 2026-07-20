@@ -4,20 +4,42 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiohttp import web
+import asyncpg
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 
-# Ініціалізація бота через змінні оточення
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-# --- ОБМАНКА ДЛЯ BEЗКОШТОВНОГО RENDER WEB SERVICE ---
+# Стан для введення метрик дня
+class MetricsState(StatesGroup):
+    waiting_for_muscle_ups = State()
+
+# Ініціалізація бази даних
+async def init_db():
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS daily_metrics (
+            id SERIAL PRIMARY KEY,
+            date DATE UNIQUE NOT NULL,
+            muscle_ups INTEGER DEFAULT 0,
+            is_clean BOOLEAN DEFAULT TRUE
+        );
+    ''')
+    await conn.close()
+    logging.info("Базу даних успішно ініціалізовано.")
+
+# --- ОБМАНКА ДЛЯ RENDER ---
 async def handle_ping(request):
     return web.Response(text="AZЪ System Online")
 
@@ -26,13 +48,11 @@ async def start_web_server():
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render автоматично передає порт у змінну оточення PORT
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"Фоновий веб-сервер обманки запущено на порту {port}")
 
-# --- ГОЛОВНЕ МЕНЮ СИСТЕМИ ---
+# --- МЕНЮ ---
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="📊 Метрики дня")
@@ -45,9 +65,7 @@ def get_main_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if str(message.from_user.id) != ADMIN_ID:
-        await message.answer("Доступ обмежено. Система AZЪ налаштована на одного Творця.")
         return
-        
     welcome_text = (
         "🔮 **СИСТЕМА AZЪ | АКТИВАЦІЯ**\n\n"
         "Вітаю, Творцю. Радник та інструмент трансформації реальності готовий до роботи.\n"
@@ -55,12 +73,40 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-# --- МОДУЛЬ АНАЛІЗУ СТАНУ ТА ПСИХОЛОГІЇ ---
+# Логіка введення метрик дня
+@dp.message(lambda message: message.text == "📊 Метрики дня")
+async def start_metrics_input(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != ADMIN_ID:
+        return
+    await message.answer("Введіть кількість чистих виходів силою на барах за сьогодні:")
+    await state.set_state(MetricsState.waiting_for_muscle_ups)
+
+@dp.message(MetricsState.waiting_for_muscle_ups)
+async def save_metrics(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Будь ласка, введіть числове значення.")
+        return
+    
+    count = int(message.text)
+    today = datetime.now().date()
+    
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute('''
+        INSERT INTO daily_metrics (date, muscle_ups, is_clean)
+        VALUES ($1, $2, TRUE)
+        ON CONFLICT (date) 
+        DO UPDATE SET muscle_ups = $2;
+    ''', today, count)
+    await conn.close()
+    
+    await state.clear()
+    await message.answer(f"✅ Результат зафіксовано: **{count}** чистих виходів. Матриця оновлена.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+# Модуль аналізу стану та психології
 @dp.message(lambda message: message.text == "🧠 Стан & Психологія")
 async def process_psychology(message: types.Message):
     if str(message.from_user.id) != ADMIN_ID:
         return
-        
     builder = ReplyKeyboardBuilder()
     builder.button(text="⚡️ Високий ресурс")
     builder.button(text="🔋 Виснаження після роботи")
@@ -92,38 +138,58 @@ async def process_exhaustion(message: types.Message):
 async def back_to_main(message: types.Message):
     await message.answer("Повернення в матрицю управління.", reply_markup=get_main_keyboard())
 
-# --- ПЛАНУВАЛЬНИК СПОВІЩЕНЬ ---
+# --- АНАЛІТИКА ---
+@dp.message(lambda message: message.text == "📈 Аналітика Волі")
+async def show_analytics(message: types.Message):
+    if str(message.from_user.id) != ADMIN_ID:
+        return
+    
+    conn = await asyncpg.connect(DATABASE_URL)
+    row = await conn.fetchrow('SELECT SUM(muscle_ups) as total, COUNT(*) as days FROM daily_metrics;')
+    await conn.close()
+    
+    total_ups = row['total'] if row and row['total'] else 0
+    days = row['days'] if row and row['days'] else 0
+    
+    analytics_text = (
+        "📊 **АНАЛІТИКА МАТРИЦІ AZЪ**\n\n"
+        f"• **Днів у структурі дисципліни:** {days}\n"
+        f"• **Сумарно виконано виходів:** {total_ups}\n"
+        "• **Слово Творця (Чистота):** Збережено безкомпромісно.\n\n"
+        "Кожен день внеску наближає базу вибухової сили до абсолютного максимуму."
+    )
+    await message.answer(analytics_text, parse_mode="Markdown")
+
+# Планувальник
 async def send_morning_message():
     try:
         text = (
             "🔮 **МАТРИЦЯ ВОЛІ | AZЪ**\n\n"
             "* **Слово Творця (Чистота від алкоголю):** Виконується безкомпромісно.\n"
-            "* **Вектор часу до мети:** Перевірка фокуса.\n"
-            "* **Стабільна база вибухової сили:** Прагнення до ідеальної техніки елементів.\n\n"
+            "* **Стабільна база вибухової сили:** Прагнення до ідеальної техніки.\n\n"
             "Новий день. Нова ітерація дисципліни."
         )
         await bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Помилка надсилання ранкового повідомлення: {e}")
+        logging.error(f"Помилка надсилання: {e}")
 
 async def send_evening_message():
     try:
         await bot.send_message(
             chat_id=ADMIN_ID, 
-            text="🌙 **AZЪ | ВЕЧІРНІЙ ЗВІТ**\n\nЧас зафіксувати результати дня. Внеси свої метрики силових виходів та підтверди Чистоту.",
+            text="🌙 **AZЪ | ВЕЧІРНІЙ ЗВІТ**\n\nЧас зафіксувати результати дня. Натисни «📊 Метрики дня» та внеси свої чисті виходи силою.",
             parse_mode="Markdown"
         )
     except Exception as e:
-        logging.error(f"Помилка надсилання вечірнього повідомлення: {e}")
+        logging.error(f"Помилка надсилання: {e}")
 
 scheduler.add_job(send_morning_message, "cron", hour=8, minute=0)
 scheduler.add_job(send_evening_message, "cron", hour=21, minute=30)
 
 async def main():
-    # Запускаємо веб-сервер обманки для Render разом із ботом
+    await init_db()
     await start_web_server()
     scheduler.start()
-    logging.info("Планувальник завдань активовано.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
